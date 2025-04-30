@@ -1,3 +1,6 @@
+Note: This repository is a work in progress and not fully functional yet.
+
+
 # 🧬 Clinical Trial Matcher for Rare Disease Patients
 
 This project extracts and structures eligibility and disease info from clinical trial text using NLP and matches it to rare disease patients' phenotypes (HPO terms). It recommends the most relevant clinical trials for a given patient profile.

@@ -23,6 +23,6 @@ This project extracts and structures eligibility and disease info from clinical 
 
 ## 📦 Installation
 ```bash
-git clone https://github.com/your-username/clinical-trial-matcher.git
+git clone https://github.com/slathwal/clinical-trial-matcher.git
 cd clinical-trial-matcher
 pip install -r requirements.txt

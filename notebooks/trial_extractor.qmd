@@ -1,0 +1,396 @@
+---
+title: "Extract information from clinical trial descriptions using NLP"
+author: "Shefali Lathwal"
+date: "2025-04-30"
+date-modified: last-modified
+format: html
+toc: true
+jupyter: clinical_trial
+draft: true
+---
+
+# Read in the clinical trial information
+
+```{python}
+import pandas as pd
+df = pd.read_csv("../data/clinical_trials_gyn.csv")
+print(df.head())
+
+from ast import literal_eval
+df["Condition"] = df["Condition"].apply(literal_eval)
+#df["Location"] = df["Location"].apply(literal_eval)
+def safe_literal_eval(text):
+    """
+    Safely evaluates a string, handling NaN representations.
+    """
+    if isinstance(text, str):
+        text = text.replace('NaN', 'None')
+        try:
+            return literal_eval(text)
+        except (ValueError, SyntaxError):
+            return np.nan
+    return text
+df["Location"] = df["Location"].apply(safe_literal_eval)
+type(df["Location"][0])
+```
+
+# Start using spacy.
+Note: I had to use python version 3.12.10 to get spacy to install correctly. it was not working with version 3.13. I have now switched to version 3.9.22
+- In python version 3.9.22, I was getting error with pip install scispacy. So first, I did the following:
+- pip install "nmslib @ git+https://github.com/nmslib/nmslib.git/#subdirectory=python_bindings"
+- then I was able to do pip install scispacy
+- I am installing a model called `en_core_sci_md` from scispacy. I am using scispacy version 0.5.3 and the models corresponding to this version as well.
+- I installed a model `en_core_web_sm` from spacy
+
+```{python}
+import spacy
+
+# Load spaCy model into an nlp object
+nlp = spacy.load("en_core_web_sm")
+
+# Look at the components in the nlp object
+nlp.component_names
+```
+
+## Look at the labels available in the ner component of the ppipeline
+```{python}
+
+nlp.get_pipe("ner").labels
+```
+
+# Look at scispacy model
+
+```{python}
+import scispacy
+nlp_sci = spacy.load("en_core_sci_md")
+nlp_sci.component_names
+```
+
+```{python}
+nlp_sci.get_pipe("ner").labels
+```
+the model from scispaCy has only one tag -> ENTITY.
+
+# Check medspacy
+```{python}
+import medspacy
+nlp_med = medspacy.load()
+print(nlp_med.component_names)
+print(nlp_med.pipe_names)
+```
+
+## Medspacy load an empty pipeline
+```{python}
+import medspacy
+from medspacy.sentence_splitting import PyRuSHSentencizer
+nlp = spacy.blank("en")
+print(nlp.pipe_names)
+nlp.add_pipe("medspacy_pyrush")
+print(nlp.pipe_names)
+text = df["EligibilityCriteria"][0]
+doc = nlp(text)
+```
+
+Look at the sentenc with the Sentecizer that does sentence segmentation
+```{python}
+dir(doc)
+for sent in doc.sents:
+    print(sent)
+    print("---"*10)
+```
+
+## Check medspacy tokenizer
+I am not sure what this is doing
+
+```{python}
+import medspacy
+from medspacy.custom_tokenizer import create_medspacy_tokenizer
+nlp = spacy.blank("en")
+print(nlp.pipe_names)
+
+medspacy_tokenizer = create_medspacy_tokenizer(nlp)
+nlp.tokenizer = medspacy_tokenizer
+print(nlp.pipe_names) # tokenizer does not get added to the pipe of nlp object
+
+print(list(nlp(text)))
+
+```
+
+## Look at medspacy target matching and context analysis
+
+```{python}
+
+
+import spacy
+import medspacy
+from medspacy.visualization import visualize_ent, visualize_dep
+
+nlp = medspacy.load(medspacy_enable=["medspacy_pyrush"]) # only enable one step in the pipe
+print(nlp.pipe_names)
+target_matcher = nlp.add_pipe("medspacy_target_matcher")
+print(nlp.pipe_names)
+from medspacy.ner import TargetRule
+
+# Define some rules
+target_rules = [
+    TargetRule(literal="non-menopausal", category="CRITERION"),
+    TargetRule("adenomyosis", "DISEASE"),
+    TargetRule("pelvic pain", "CRITERION"),
+    TargetRule("infertility", "DISEASE"),
+    TargetRule("nonsteroidal anti-inflammatory drugs", "TREATMENT"),
+    TargetRule("progestin", "TREATMENT"),
+    TargetRule("stroke", "DISEASE"),    
+]
+  
+# Add rules to target_matcher
+target_matcher.add(target_rules)
+doc = nlp(text.lower())
+print(doc.ents)
+
+for ent in doc.ents:
+    print(ent, ent.label_, ent._.target_rule, sep="  |  ")
+    print()
+
+```
+
+## Add context in medspacy
+```{python}
+context = nlp.add_pipe("medspacy_context")
+print(nlp.pipe_names)
+
+```
+
+## test the medspacy pipeline with sentencizer, target matcher and medspacy context
+```{python}
+doc = nlp("Mother with stroke at age 82")
+doc = nlp(text)
+for ent in doc.ents:
+    if any([ent._.is_negated, ent._.is_uncertain, ent._.is_historical, ent._.is_family, ent._.is_hypothetical, ]):
+        print("'{0}' modified by {1} in: '{2}'".format(ent, ent._.modifiers, ent.sent))
+        print()
+
+for ent in doc.ents:
+    print(ent)
+    if (ent._.is_negated):
+        print(ent)
+    if ent._.is_uncertain:
+        print(ent)
+    print(ent._.modifiers)
+```
+
+# Extract conditions
+
+The doc object from spacy has the following attributes
+- is_sentenced
+- is_tagged
+- is_parsed
+- is_nered
+- has_vector
+- text - contains the whole text given to the object
+
+## Try default pipeline with medspacy
+```{python}
+import medspacy
+nlp = spacy.load("en_core_sci_md")
+print(nlp.pipe_names)
+#nlp_med = medspacy.load("en_core_sci_md") # This gives an error
+nlp_med = medspacy.load() # This detects nothing without target rules
+print(nlp_med.pipe_names)
+text = df["EligibilityCriteria"][0]
+doc = nlp(text.lower())
+for ent in doc.ents:
+    print(ent)
+
+#print("\n\nMedspacy pipeline")
+#doc = nlp_med(text.lower())
+#for ent in doc.ents:
+#    print(ent)
+
+
+```
+
+```{python}
+spacy.displacy.render(doc, style = "ent", jupyter = True)
+```
+
+```{python}
+import spacy
+import scispacy
+from scispacy.abbreviation import AbbreviationDetector
+from scispacy.linking import EntityLinker
+from IPython.display import display, Markdown
+
+#nlp = spacy.load("en_ner_bc5cdr_md")
+nlp = spacy.load("en_core_sci_md")
+
+nlp.add_pipe("abbreviation_detector")
+nlp.add_pipe("scispacy_linker", config={"resolve_abbreviations": True, "linker_name": "mesh", "max_entities_per_mention":1})
+
+
+def extract_conditions(text):
+    cleaned_text = ", ".join(text)
+    #print(cleaned_text)
+    doc = nlp(cleaned_text.lower())
+    #print([ent.text for ent in doc.ents])
+    conditions = [ent.text for ent in doc.ents]
+    linker = nlp.get_pipe("scispacy_linker")
+    normalized_conditions = [linker.kb.cui_to_entity[ent[0]][0] for entity in doc.ents for ent in entity._.kb_ents]
+    return conditions, normalized_conditions
+
+result = df["Condition"].apply(extract_conditions).tolist()
+#print(df[["NCTId", "extracted_conditions", "normalized_conditions"]].head())
+print(result)
+#print(conditions)
+#print(normalized_conditions)
+#test = extract_conditions(df["Condition"][3])
+#test
+#df["extracted_conditions"]
+```
+
+# Save the result from conditions to the dataframe
+```{python}
+df[["conditions","normalized_conditions"]] = result
+df
+
+```
+
+```{python}
+def extract_criteria(text):
+    #cleaned_text = ", ".join(text)
+    #print(cleaned_text)
+    doc = nlp(text)
+    #print([ent.text for ent in doc.ents])
+    for ent in doc.ents:
+        print(ent.text, ent.label_)
+    conditions = [ent.text for ent in doc.ents]
+   
+
+    return conditions
+
+test_output = extract_criteria(df["EligibilityCriteria"][0])
+test_output
+
+#df["extracted_diseases"] = df["EligibilityCriteria"].apply(extract_criteria)
+#print(df[["NCTId", "extracted_diseases"]])
+```
+
+# Using BERN2 for NER and NEN
+```{python}
+import requests
+
+def query_plain(text, url="http://bern2.korea.ac.kr/plain"):
+    return requests.post(url, json={'text': text}).json()
+
+
+text = "Autophagy maintains tumour growth through circulating arginine."
+print(query_plain(text))
+tags = query_plain(df["EligibilityCriteria"][2])
+
+for item in tags["annotations"]:
+    print(item["id"])
+    print(item["mention"])
+    print(item["obj"])
+    print("-------\n")
+```
+
+# Goal
+Perform Named entity recognition and normalization on two columns:
+## Condition column
+- Condition column is a list containing diesease terms in each trial
+- We want to normalize to standard vocabularies such as MeSH, SNOMED-CT or UMLS
+- We can use the following two approaches:
+    - use QuickUMLS, MetaMap or scispaCy with en_core_sci_lg+UMLS linker
+    - use BioPortal Annotator API or OntoPortal for Online linking.
+
+## Eligibility criteria column
+- Eligibility criteria is an unstructured text column that contains several clinical concepts like diseases, symptoms, patient demographics, medications, lab tests, procedures etc.
+- We can use the following approach to work with this column:
+    - use scispacy or medspaCy to perform NER over long-form text
+    - user rule-based matching to catch domain-specific patterns
+    - Use regex for structured patterns like age or BMI
+    - We can use BioBERT or PubMedBERT for higher accuracy NER
+    
+
+### Build a test pipeline for NER and NEN using scispacy
+```{python}
+#import spacy
+import spacy
+import scispacy
+from scispacy.abbreviation import AbbreviationDetector
+from scispacy.linking import EntityLinker
+from IPython.display import display, Markdown
+
+#nlp = spacy.load("en_ner_bc5cdr_md")
+#text = df["EligibilityCriteria"][0]
+#text2 = df["EligibilityCriteria"][3]
+#display(Markdown(text))
+#display(Markdown(text2))
+
+
+
+
+nlp = spacy.load("en_core_sci_md")
+
+#doc = nlp("Women with polycystic ovary syndrome (PCOS) and insulin resistance were excluded.")
+#for ent in doc.ents:
+#    print(ent.text, ent.label_)
+
+
+#print("Abbreviation", "\t", "Definition")
+#for abrv in doc._.abbreviations:
+#	print(f"{abrv} \t ({abrv.start}, {abrv.end}) {abrv._.long_form}")
+
+
+nlp.add_pipe("abbreviation_detector")
+nlp.add_pipe("scispacy_linker", config={"resolve_abbreviations": True, "linker_name": "mesh", "max_entities_per_mention":1})
+
+doc = nlp("Endometriosis and fibroids are common exclusion criteria in absence of severe pelvic pain and irregular menstrual cycle.")
+
+#doc.ents[1]
+
+
+# for ent in doc.ents:
+#     for umls_ent in ent._.kb_ents:
+#         print(ent.text, umls_ent[0], linker.kb.cui_to_entity[umls_ent[0]])
+```
+
+```{python}
+linker = nlp.get_pipe("scispacy_linker")
+
+for entity in doc.ents:
+    print(entity)
+
+for entity in doc.ents:
+    print(entity)
+    for ent in entity._.kb_ents:
+	    print(linker.kb.cui_to_entity[ent[0]][0])
+
+
+```
+```{python}
+# Using BioBERT or PubMedBERT for higher accuracy NER
+from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
+
+# Load BioBERT model and tokenizer
+model_name = "dmis-lab/biobert-base-cased-v1.1"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForTokenClassification.from_pretrained(model_name)
+
+# Create a pipeline for NER
+ner_pipeline = pipeline("ner", model=model, tokenizer=tokenizer, aggregation_strategy="simple")
+
+# Example: Extract entities from EligibilityCriteria
+def extract_entities_with_biobert(text):
+    entities = ner_pipeline(text)
+    return [{"entity": entity["entity_group"], "word": entity["word"], "score": entity["score"]} for entity in entities]
+
+# Test the function
+test_text = "Women with polycystic ovary syndrome (PCOS) and insulin resistance were excluded."
+test_text = "Endometriosis and fibroids are common exclusion criteria in absence of severe pelvic pain and irregular menstrual cycle."
+entities = extract_entities_with_biobert(test_text)
+print(entities)
+
+# Apply to the EligibilityCriteria column
+#df["biobert_entities"] = df["EligibilityCriteria"].apply(extract_entities_with_biobert)
+#print(df[["NCTId", "biobert_entities"]].head())
+```

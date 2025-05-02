@@ -2,7 +2,7 @@
 title: "Query API from clinicaltrials.gov"
 author: "Shefali Lathwal"
 date: "2025-04-30"
-last-modified: true
+date-modified: last-modified
 format: html
 toc: true
 jupyter: clinical_trial

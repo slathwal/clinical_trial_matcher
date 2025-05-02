@@ -1,6 +1,0 @@
-pandas
-spacy
-scikit-learn
-streamlit
-biopython
-requests

@@ -1,0 +1,462 @@
+---
+title: "Build an agent to extract information from medical text"
+author: "Shefali Lathwal"
+date: "2025-05-04"
+date-modified: last-modified
+format: html
+toc: true
+jupyter: clinical_trial
+---
+
+# Import libraries
+```{python}
+from langchain_ollama import ChatOllama
+from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
+from langgraph.graph import StateGraph, START, END, MessagesState
+from langgraph.prebuilt import ToolNode, tools_condition
+from IPython.display import Image, display, Markdown
+
+gemma3 = ChatOllama(model = "gemma3:4b", temperature = 0.0)
+mistral = ChatOllama(model = "mistral:latest", temperature = 0.0)
+
+```
+
+# Test the Chat Model
+
+```{python}
+system_message = SystemMessage(content = "You are a helpful assistant who is to-the-point, and replies in a maximum of two lines.")
+human_message = HumanMessage(content = "Tell me about Canada.")
+response = gemma3.invoke([system_message, human_message])
+```
+
+```{python}
+Markdown(response.content)
+```
+
+# We are going to use [Ontology Access Toolkit (OAK)](https://incatools.github.io/ontology-access-kit/introduction.html)
+
+We will create a function that will use ontology access toolkit
+```{python}
+from oaklib import get_adapter
+from typing import Tuple
+
+def search_hpo(term: str) -> list[Tuple[str, str]]:
+    """
+    Search the Human Phenotype Ontology for a term.
+
+    Note that search should take into account synonyms, but synonyms may be incomplete, so if you cannot find a concept of interest, try searching using related or synonym terms.
+
+    If you are searching for a complete term, try searching on the sub-terms to get a sense of the terminology used in the ontology.
+
+    Args:
+        term: The term to search for
+    
+    Returns:
+        A list of tuples, each containing an HPO ID and a label
+    """
+    adapter = get_adapter("ols:hp")
+    results = adapter.basic_search(term)
+    #print(list(adapter.labels(results)))
+    labels = list(adapter.labels(results))
+    
+    print(f"## Query: {term} -> {labels}")
+    return labels
+
+labels = search_hpo("endometriosis")
+labels
+
+```
+
+
+# Call the tool with an LLM
+
+```{python}
+llm_with_tool = mistral.bind_tools([search_hpo])
+tool_call = llm_with_tool.invoke([HumanMessage(content = "Give me ontology for term: endometriosis")])
+tool_call
+```
+
+
+# Now create a langgraph agent that will call the ontology lookup service and give back the result
+Call the tool directly with the function without using any LLM
+
+```{python}
+from typing import Tuple, TypedDict, Annotated
+import operator
+
+
+class HPO_Ontology_State(MessagesState):
+    query_term: str
+    hpo_terms: Annotated[list[Tuple[str, str]], operator.add]
+
+def search_hpo(state: HPO_Ontology_State):
+    """
+    Search the Human Phenotype Ontology for a term.
+
+    Note that search should take into account synonyms, but synonyms may be incomplete, so if you cannot find a concept of interest, try searching using related or synonym terms.
+
+    If you are searching for a complete term, try searching on the sub-terms to get a sense of the terminology used in the ontology.
+
+    Args:
+        term: The term to search for
+    
+    Returns:
+        A list of tuples, each containing an HPO ID and a label
+    """
+    adapter = get_adapter("ols:hp")
+    results = adapter.basic_search(state["query_term"])
+    labels = list(adapter.labels(results))
+    print(f'## Query: {state["query_term"]} -> {labels}')
+    return {"hpo_terms": labels}
+
+
+
+builder = StateGraph(HPO_Ontology_State)
+builder.add_node("search_ontology", search_hpo)
+builder.add_edge(START, "search_ontology")
+builder.add_edge("search_ontology", END)
+
+graph = builder.compile()
+
+Image(graph.get_graph().draw_mermaid_png())
+
+input_state = {"query_term": "endometriosis"}
+result = graph.invoke(input_state)
+result["hpo_terms"]
+
+```
+
+
+# Ask the agent to create an input for the tool
+
+```{python}
+
+def tool_caller(state: HPO_Ontology_State):
+    return {"messages": [llm_with_tool.invoke(state["messages"])]}
+
+class HPO_Ontology_State(MessagesState):
+    pass
+
+def search_hpo(term: str) -> list[Tuple[str, str]]:
+    """
+    Search the Human Phenotype Ontology for a term.
+
+    Note that search should take into account synonyms, but synonyms may be incomplete, so if you cannot find a concept of interest, try searching using related or synonym terms.
+
+    If you are searching for a complete term, try searching on the sub-terms to get a sense of the terminology used in the ontology.
+
+    Args:
+        term: The term to search for
+    
+    Returns:
+        A list of tuples, each containing an HPO ID and a label
+    """
+    adapter = get_adapter("ols:hp")
+    results = adapter.basic_search(term)
+    labels = list(adapter.labels(results))
+    print(f'## Query: {term} -> {labels}')
+    return labels
+
+
+
+builder = StateGraph(HPO_Ontology_State)
+builder.add_node("tool_caller", tool_caller)
+builder.add_node("tools", ToolNode([search_hpo]))
+builder.add_conditional_edges("tool_caller", tools_condition,)
+builder.add_edge(START, "tool_caller")
+builder.add_edge("tools", END)
+
+graph = builder.compile()
+
+display(Image(graph.get_graph().draw_mermaid_png()))
+
+
+llm_with_tool = mistral.bind_tools([search_hpo])
+system_message = SystemMessage(content = "You are an expert ontology curator. extract one disease term from the text given by the user and use the search_hpo tool to find the ontology id and label associated with the disease.")
+human_message = HumanMessage(content = "endometriosis and adenomyosis with severe pelvic pain")
+messages = [system_message, human_message]   
+
+input_state = {"messages":messages}
+
+
+result = graph.invoke(input_state)
+
+for m in result["messages"]:
+    m.pretty_print()
+```
+
+
+# Ask agent to create input for the tool, then evaluate the results and give back an answer to the user
+```{python}
+
+class HPO_Ontology_State(MessagesState):
+    pass
+def tool_caller(state: HPO_Ontology_State):
+    return {"messages": [llm_with_tool.invoke(state["messages"])]}
+
+
+
+def search_hpo(term: str) -> list[Tuple[str, str]]:
+    """
+    Search the Human Phenotype Ontology for a term.
+
+    Note that search should take into account synonyms, but synonyms may be incomplete, so if you cannot find a concept of interest, try searching using related or synonym terms.
+
+    If you are searching for a complete term, try searching on the sub-terms to get a sense of the terminology used in the ontology.
+
+    Args:
+        term: The term to search for
+    
+    Returns:
+        A list of tuples, each containing an HPO ID and a label
+    """
+    adapter = get_adapter("ols:hp")
+    results = adapter.basic_search(term)
+    labels = list(adapter.labels(results))
+    print(f'## Query: {term} -> {labels}')
+    return labels
+
+
+
+builder = StateGraph(HPO_Ontology_State)
+builder.add_node("tool_caller", tool_caller)
+builder.add_node("tools", ToolNode([search_hpo]))
+builder.add_conditional_edges("tool_caller", tools_condition,)
+builder.add_edge(START, "tool_caller")
+builder.add_edge("tools", "tool_caller")
+builder.add_edge("tool_caller", END)
+
+graph = builder.compile()
+
+display(Image(graph.get_graph().draw_mermaid_png()))
+
+
+llm_with_tool = mistral.bind_tools([search_hpo], tool_choice="search_hpo")
+system_message = SystemMessage(content = "You are an expert ontology curator. Extract all disease terms from the text given by the user and use the search_hpo tool to find the ontology id and label associated with those terms.")
+human_message = HumanMessage(content = "endometriosis and adenomyosis with severe pelvic pain")
+messages = [system_message, human_message]   
+
+input_state = {"messages":messages}
+
+
+result = graph.invoke(input_state)
+
+for m in result["messages"]:
+    m.pretty_print()
+```
+
+
+# Create annotator agent
+I was trying to get the output from agent in a specific format, but it is not working so far.
+Trying example from here: https://langchain-ai.github.io/langgraph/how-tos/react-agent-structured-output/#define-model-tools-and-graph-state
+
+```{python}
+from pydantic import BaseModel, Field
+from typing import Optional, Tuple, Annotated
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
+from langchain_core.tools import tool
+from langgraph.graph import MessagesState, StateGraph, START, END
+import operator
+from oaklib import get_adapter
+
+class TextAnnotation(BaseModel):
+    """
+    A text annotation is a span of text and the HPO ID and label for the anatomical structure it mentions.
+    Use `text` for the source text, and `hpo_id` and `hpo_label` for the HPO ID and label of the human phenotype in the ontology.
+    """
+    text: str = Field(description = "The term extracted from the user query and given to the tool to find ontology")
+    hpo_id: Optional[str] = Field(None, description = "The id of the term from human phenotype ontology")
+    hpo_label: Optional[str] = Field(None, description="The label of the term from human phenotype ontology")
+
+class TextAnnotationResult(BaseModel):
+    "Respond do the user in this format"
+    annotations: list[TextAnnotation]
+
+#class ontology_result(TypedDict):
+#    messages: Annotated[list[AnyMessage], add_messages]
+#    annotations: Annotated[list[TextAnnotation], #operator.add]
+
+class AgentState(MessagesState):
+    # Final Structured response from agents
+    annotations: Annotated[list[TextAnnotation], operator.add]
+
+def call_tool(state: AgentState):
+    system_prompt="""
+    You are an expert at annotating terms from a text given by user from human phenotype ontology using a tool called hpo_search. You should extract all relevant terms from the text, send the terms to the hpo_search tool and aggregate the results from the tool to present to teh user.
+
+    However, before giving up you should be sure to try different combinations of
+    synonyms with the `search_hpo` tool.
+ 
+    """ 
+    system_message = SystemMessage(content = system_prompt)
+    #print(state["messages"])
+    #print(system_message)
+    messages = [system_message] + state["messages"]
+    #structured_llm = llm_with_tool.with_structured_output(TextAnnotationResult)
+
+    result = llm_with_tool.invoke(messages)
+    return {"messages":[result]}
+
+
+def search_hpo(term: str) -> list[Tuple[str, str]]:
+    """
+    Search the Human Phenotype Ontology for a term.
+
+    Note that search should take into account synonyms, but synonyms may be incomplete, so if you cannot find a concept of interest, try searching using related or synonym terms.
+
+    If you are searching for a complete term, try searching on the sub-terms to get a sense of the terminology used in the ontology.
+
+    Args:
+        term: The term to search for
+    
+    Returns:
+        A list of tuples, each containing an HPO ID and a label
+    """
+    adapter = get_adapter("ols:hp")
+    results = adapter.basic_search(term)
+    labels = list(adapter.labels(results))
+    print(f'## Query: {term} -> {labels}')
+    return labels
+
+
+
+builder = StateGraph(AgentState)
+builder.add_node("tool_caller", call_tool)
+builder.add_node("tools", ToolNode([search_hpo]))
+builder.add_conditional_edges("tool_caller", tools_condition,)
+builder.add_edge(START, "tool_caller")
+builder.add_edge("tools", "tool_caller")
+builder.add_edge("tool_caller", END)
+
+graph = builder.compile()
+
+display(Image(graph.get_graph().draw_mermaid_png()))
+
+
+llm_with_tool = mistral.bind_tools([search_hpo], tool_choice = "search_hpo")
+llm_with_structured_output = mistral.with_structured_output(TextAnnotationResult)
+
+DEFAULT_TEXT = "endometriosis and adenomyosis"
+
+human_message = HumanMessage(content = DEFAULT_TEXT)
+messages = human_message   
+
+input_state = {"messages": [messages]}
+
+
+result = graph.invoke(input_state)
+
+for m in result["messages"]:
+    m.pretty_print()
+```
+
+
+```{python}
+result.keys()
+```
+
+```{python}
+
+from pydantic import BaseModel, Field
+from typing import Optional, Tuple, Annotated
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
+from langchain_core.tools import tool
+from langgraph.graph import MessagesState, StateGraph, START, END
+import operator
+from oaklib import get_adapter
+
+DEFAULT_TEXT = 'The patient has a history of severe pelvic pain during each menstrual cycle and the ultrasound shows morphology similar to adenomyosis. The patient also has irregular menstrual period. Possibly ndicative of endometriosis.'
+
+class TextAnnotation(BaseModel):
+    """
+    A text annotation is a span of text and the HPO ID and label for the anatomical structure it mentions.
+    Use `text` for the source text, and `hpo_id` and `hpo_label` for the HPO ID and label of the human phenotype in the ontology.
+    """
+    text: str = Field(description = "The term given to the tool to find ontology")
+    hpo_id: Optional[str] = Field(None, description = "The id of the term from human phenotype ontology")
+    hpo_label: Optional[str] = Field(None, description="The label of the term from human phenotype ontology")
+
+class TextAnnotationResult(BaseModel):
+    "Respond do the user in this format"
+    annotations: list[TextAnnotation]
+
+class SearchTerms(BaseModel):
+    terms: list[str]
+
+class OverallState(TypedDict):
+    text: str
+    terms: list[str]
+    hpo_terms: Annotated[list[TextAnnotation],operator.add]
+
+search_query_prompt = "Extract disease terms from the {text} given by the user that can be later queried for ontologies"
+
+# Create a node that will extract key disease terms from a text
+def generate_terms(state: OverallState):
+    
+    prompt = search_query_prompt.format(text = state["text"])
+    response = gemma3.with_structured_output(SearchTerms).invoke(prompt)
+    return {"terms": response.terms}
+
+#class HPO_Output(BaseMode):
+#    hpo_terms: list[Tuple[str, str]]
+
+class HPO_Input(TypedDict):
+    term: str
+
+
+
+# Create a node that will search each term with hpo_search tool
+def search_hpo(state: HPO_Input):
+    adapter = get_adapter("ols:hp")
+    results = adapter.basic_search(state["term"])
+    hpo_output = list(adapter.labels(results))
+    print(f"## Query: {state['term']} -> {hpo_output}")
+    output_prompt = "For each item in the list {ontology_output} create a TextAnnotation class with first term of item in hpo_id and the second term of item in hpo_label. Use the {query} for the text key in each TextAnotation Class. Output a final list according to the classs TextAnnotationResults."
+    print("output_of_tool_call: ", hpo_output)
+    prompt = output_prompt.format(ontology_output = hpo_output[0:min(2, len(hpo_output))], query = state['term'])
+    print("prompt", prompt)
+    output = mistral.with_structured_output(TextAnnotationResult).invoke(prompt)
+    return {"hpo_terms": [output.annotations]}
+
+from langgraph.constants import Send
+def continue_to_hpo(state: OverallState):
+    return [Send("search_hpo", {"term": term}) for term in state["terms"]]
+
+
+builder = StateGraph(OverallState)
+builder.add_node("generate_terms", generate_terms)
+builder.add_node("search_hpo", search_hpo)
+builder.add_conditional_edges("generate_terms", continue_to_hpo, ["search_hpo"])
+builder.add_edge(START, "generate_terms")
+builder.add_edge("search_hpo", END)
+
+graph = builder.compile()
+#graph
+display(Image(graph.get_graph().draw_mermaid_png()))
+
+# for s in graph.stream({"text": DEFAULT_TEXT}):
+#     print(s)
+```
+
+```{python}
+result = graph.invoke({"text": DEFAULT_TEXT})
+```
+
+```{python}
+result["text"], result["terms"], result["hpo_terms"]
+```
+
+
+```{python}
+result["hpo_terms"]
+for term in result["hpo_terms"]:
+    print(term)
+```
+
+
+
+# Refrences
+- https://www.youtube.com/watch?v=Ml0YVjKnZnE
+

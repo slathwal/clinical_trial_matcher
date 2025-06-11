@@ -34,6 +34,387 @@ df["Location"] = df["Location"].apply(safe_literal_eval)
 type(df["Location"][0])
 ```
 
+# Check the inclusion criteria column
+```{python}
+from IPython.display import Markdown
+id_list = []
+for ind,text in enumerate(df["EligibilityCriteria"]):
+    if "inclusion criteria" in text.lower():
+        id_list.append(df.loc[ind,"NCTId"])
+    else:
+        #print(df.loc[ind,"NCTId"])
+        pass
+
+len(id_list) == df.shape[0]
+
+id_list = []
+for ind,text in enumerate(df["EligibilityCriteria"]):
+    if "exclusion criteria" in text.lower():
+        id_list.append(df.loc[ind,"NCTId"])
+    else:
+        print(df.loc[ind,"NCTId"])
+
+len(id_list) == df.shape[0]
+```
+
+Trials that do not have the text: "inclusion Criteria"
+NCT06217315
+NCT05971849
+NCT06325501
+NCT00005095
+
+Trials that do not have the text: "exclusion criteria"
+NCT06217315
+NCT06914752
+NCT03760926
+NCT04196595
+NCT05971849
+NCT06208891
+NCT04272086
+NCT00005095
+
+```{python}
+display(Markdown(df[df["NCTId"] == "NCT06325501"]["EligibilityCriteria"].values[0]))
+```
+
+# Use simulated data first
+```{python}
+import pandas as pd
+
+# Simulated 10 clinical trials
+clinical_trials = pd.DataFrame([
+    {
+        "id": f"CT00{i+1}",
+        "disease": disease,
+        "eligibility_text": eligibility
+    }
+    for i, (disease, eligibility) in enumerate([
+        ("Endometriosis", "Inclusion Criteria:\n* Women aged 20 to 35\n* Diagnosis of endometriosis confirmed by MRI\nExclusion Criteria:\n* BMI > 35\n* Previous endometriosis surgery"),
+        ("PCOS", "Inclusion Criteria:\n* Women aged 18 to 35\n* Diagnosis of PCOS based on Rotterdam criteria\nExclusion Criteria:\n* Diabetes mellitus\n* Currently pregnant"),
+        ("Adenomyosis", "This study targets women aged 40-55 who are scheduled for hysterectomy and diagnosed with adenomyosis or a control pathology. Patients must be non-menopausal and multiparous. Certain medications and conditions are contraindicated."),
+        ("Uterine Fibroids", "Inclusion Criteria:\n* Female aged 30-45\n* Symptomatic uterine fibroids confirmed by ultrasound\nExclusion Criteria:\n* Pregnancy\n* Previous uterine surgery"),
+        ("Endometriosis", "Inclusion Criteria:\n* Women 25-40 years old\n* Stage 3 or 4 endometriosis\nExclusion Criteria:\n* Liver disease\n* Use of hormonal therapy in the last 6 months"),
+        ("PCOS", "Inclusion Criteria:\n* Newly diagnosed PCOS, 18-30 years\n* BMI < 30\nExclusion Criteria:\n* Endocrine disorders\n* Metformin usage"),
+        ("Adenomyosis", "Inclusion Criteria:\n* Women aged 40-50\n* Non-menopausal, multiparous\nExclusion Criteria:\n* Use of NSAIDs\n* Hormonal therapy"),
+        ("Uterine Fibroids", "Inclusion Criteria:\n* Uterine fibroid diagnosis via MRI\n* Female aged 35-50\nExclusion Criteria:\n* Active cancer\n* Anticoagulant use"),
+        ("Endometriosis", "The trial is open to women aged 22-38 with documented endometriosis. Prior surgery does not disqualify unless within 6 months. Hormonal treatment must be paused 3 months prior."),
+        ("PCOS", "Inclusion:\n* Diagnosis of PCOS and infertility\n* Age 24-34\nExclusion:\n* Liver or kidney failure\n* Ongoing corticosteroid therapy")
+    ])
+])
+
+# Simulated 3 patients
+patient_profiles = pd.DataFrame([
+    {
+        "id": "P001",
+        "profile": "33-year-old woman with confirmed endometriosis via MRI. No prior surgery. BMI is 23."
+    },
+    {
+        "id": "P002",
+        "profile": "29-year-old female recently diagnosed with PCOS. No diabetes. Not pregnant. No endocrine disorders."
+    },
+    {
+        "id": "P003",
+        "profile": "45-year-old multiparous woman with adenomyosis. Non-menopausal and scheduled for hysterectomy. Not on hormonal therapy."
+    }
+])
+
+# Save to CSV
+clinical_trials.to_csv("../data/clinical_trials.csv", index=False)
+patient_profiles.to_csv("../data/patient_profiles.csv", index=False)
+
+
+```
+
+```{python}
+patient_profiles
+```
+
+```{python}
+clinical_trials
+```
+
+
+# Create functions to clean the text
+1. Pre-process the clinical trials text to seaprate inclusion and exclusion criteria
+2. Augment the clinical trials dataframe with the cleaned inclusion and exclusion criteria as two separate columns.
+3. Create two embeddings - one for inclusion criteria and one for exclusion criteria
+4. Load patient profiles and get their embeddings
+5. Match patient embeddings to trial embeddings
+    - Filter with keywords for disease
+    - Compare embeddings
+
+## pre-process the clinical trials eligibility criteria text
+```{python}
+import os
+import re
+import pandas as pd
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from typing import TypedDict, List, Tuple
+from langchain_ollama import ChatOllama
+from pydantic import BaseModel, Field
+
+# Clinical trials dataframe
+print(clinical_trials.head())
+print(clinical_trials.columns.tolist())
+
+# We will clean the column - eligibiligy text
+def clean_text(text):
+    return re.sub(r'\s+',' ', text.strip()) # Removes whitespaces, tabs, newline characters etc from text
+# Apply the clean text helper function
+clinical_trials["eligibility_text"].apply(clean_text)[0]
+
+class CriteriaOutput(TypedDict):
+    inclusion: list[str] = Field(description = "Bulleted list of all the inclusion criteria from the text")
+    exclusion: list[str] = Field(description = "Bulleted list of all the exclusion criteria from the text")
+
+# Extract the inclusion and exclusion criteria using regex. Fall back on LLM if needed
+def extract_criteria_with_llm(raw_text: str, model = "mistral:latest") -> dict:
+    system_message = """
+    You are an expert clinical researcher.
+
+    The following text is from a clinical trial record. It contains patient eligibility criteria, but the terms "Inclusion Criteria" and "Exclusion Criteria" may not be explicitly used.
+
+    Your task is to extract and list the inclusion criteria and exclusion criteria separately. 
+    If you do not find any exclusion criteria, return an empty list for exclusion.
+    
+    TEXT:
+    \"\"\"{text}\"\"\"
+    """
+    prompt = system_message.format(text = clean_text(raw_text))
+    print(prompt)
+    llm = ChatOllama(model = model, temperature = 0)
+    response = llm.with_structured_output(CriteriaOutput).invoke(prompt)
+    print(response)
+    return response["inclusion"], response["exclusion"]
+
+# for text in clinical_trials["eligibility_text"][0:5]:
+#     #clean_text = clean_text(text) # Remove white spaces
+#     inclusion, exclusion = extract_criteria_with_llm(raw_text = text)
+#     print(inclusion, exclusion)
+
+inclusion, exclusion = zip(*clinical_trials["eligibility_text"].map(extract_criteria_with_llm))
+print(inclusion, exclusion)
+    
+#inclusion, exclusion
+#print(inclusion, exclusion)
+#response
+```
+
+##  Augment the clinical trial dataframe with pre-processed text
+```{python}
+clinical_trials["inclusion"] = inclusion
+clinical_trials["exclusion"] = exclusion
+clinical_trials.head()
+```
+
+## Create two embeddings - one for inclusion criteria and one for exclusion criteria
+```{python}
+from langchain_ollama import OllamaEmbeddings
+embeddings_model = OllamaEmbeddings(model = "nomic-embed-text", temperature = 0)
+
+
+def embed_columns(df, columns):
+    """
+    Generates embeddings for specified columns in a DataFrame.
+
+    Args:
+        df (pd.DataFrame): The input DataFrame.
+        columns (list): A list of column names to generate embeddings for.
+
+    Returns:
+         pd.DataFrame: The DataFrame with new columns containing embeddings.
+    """
+    for col in columns:
+      df[f'{col}_embedding'] = df[col].apply(lambda x: embeddings_model.embed_documents(x))
+    return df
+
+# Example Usagedata = {'col1': ['text1', 'text2'], 'col2': ['text3', 'text4'], 'col3': [1, 2]}
+
+
+columns_to_embed = ['disease','inclusion', 'exclusion']
+
+clinical_trials = embed_columns(clinical_trials, columns_to_embed)
+
+clinical_trials.head()
+
+
+# def get_embeddings(text: , model='nomic-embed-text'):
+#     embeddings_model = OllamaEmbeddings(model = model, temperature = 0)
+#     embeddings = embeddings_model.documents
+#     return np.array(response['embedding'])
+```
+
+Examine the embeddings
+```{python}
+len(clinical_trials["inclusion_embedding"][0])
+selected_patient_profile = patient_profiles["profile"][1]
+print(selected_patient_profile)
+class PatientOutput(TypedDict):
+    profile: list[str]
+
+def extract_patient_facts(profile: str, model = "mistral:latest") -> list[str]:
+    system_message = "You are a medical expert. Given a patient profle: {profile}, break down the profile into discrete sentences with each sentence containing only one fact about the patient, either a demographic fact or clinical fact. Preserve negations where they occur. Extrack chunks with context. For example if the profile is '33-year-old woman with confirmed endometriosis via MRI. No prior surgery. BMI is 23.', break it down into the following strings - 'Age if 33 years', 'Gender is woman', 'confirmed diagnosis of endometriosis via MRI', 'no history of surgery', 'BMI is 23'. Then combine all the strings into a list."
+    llm = ChatOllama(model = model, temperature = 0)
+    prompt = system_message.format(profile = profile)
+    result = llm.with_structured_output(PatientOutput).invoke(prompt)
+    return result["profile"]
+
+#extract_patient_facts(selected_patient_profile)
+#patient_embedding = embeddings_model.embed_query(selected_patient_profile)
+#patient_embedding
+
+patient_profiles["facts"] = patient_profiles["profile"].apply(extract_patient_facts)
+patient_profiles
+```
+
+## Embed the selected patient facts
+```{python}
+columns_to_embed = ["facts"]
+
+patient_profiles = embed_columns(patient_profiles, columns_to_embed)
+
+patient_profiles
+```
+
+```{python}
+clinical_trials
+```
+## Let's match each patient fact with criteria in clinical_trials dataframe
+
+```{python}
+from sklearn.metrics.pairwise import cosine_similarity
+# count = 0
+# for embedding in patient_profiles["facts_embedding"]:
+#     #print(embedding)
+#     fact_similarity_list = []
+#     for ind, fact_embedding in enumerate(embedding):
+#         print("fact:", patient_profiles.loc[count,"facts"][ind])
+#         #print(ind, fact_embedding)
+#         fact_similarity = []
+#         for i, criteria in enumerate(clinical_trials.loc[0, "inclusion_embedding"]):
+#             print("criteria:", clinical_trials.loc[0, "inclusion"][i])
+#             #print(criteria)
+#             similarity = cosine_similarity( np.array(criteria).reshape(1, -1), np.array(fact_embedding).reshape(1, -1))[0][0]
+#             fact_similarity.append(similarity)
+#         print("list of fact similarity: ", fact_similarity)
+#         print("Maximum of fact_similarity:" , max(fact_similarity))
+#         fact_similarity_list.append(max(fact_similarity))
+#     count += 1
+#     print(fact_similarity_list, "\n")
+
+def calculate_patient_profile_similarity(clinical_trials, patient_profiles, patient_index):
+
+    count = 0
+    patient_trial_similarity = []
+    for trial in clinical_trials["inclusion_embedding"]:
+        #print(embedding)
+        criteria_similarity_list = []
+        for ind, criteria in enumerate(trial):
+            #print("criteria:", clinical_trials.loc[count,"inclusion"][ind])
+            #print(ind, fact_embedding)
+            fact_similarity = []
+            for i, fact_embedding in enumerate(patient_profiles.loc[patient_index, "facts_embedding"]):
+                #print("fact:", patient_profiles.loc[patient_index, "facts"][i])
+                #print(criteria)
+                similarity = cosine_similarity( np.array(criteria).reshape(1, -1), np.array(fact_embedding).reshape(1, -1))[0][0]
+                fact_similarity.append(similarity)
+            #print("list of fact similarity: ", fact_similarity)
+            #print("Maximum of fact_similarity:" , max(fact_similarity))
+            criteria_similarity_list.append(max(fact_similarity))
+        count += 1
+        #rint(criteria_similarity_list, "\n")
+        patient_trial_similarity.append(np.mean(criteria_similarity_list))
+    #patient_trial_similarity
+
+    similarity_df = clinical_trials.copy()
+    #print(similarity_df)
+    for ind, trial in enumerate(similarity_df["id"]):
+        similarity_df.loc[ind, "similarity"] = patient_trial_similarity[ind]
+    #similarity_df
+    sorted_similarity_df = similarity_df.sort_values(by = "similarity", ascending = False, inplace = False )
+    return sorted_similarity_df
+
+
+
+
+```
+
+```{python}
+# For patient 1
+print(patient_profiles.loc[0,"profile"])
+sorted_similarity_df = calculate_patient_profile_similarity(clinical_trials, patient_profiles, 0)
+sorted_similarity_df
+```
+
+```{python}
+# For patient 2
+print(patient_profiles.loc[1,"profile"])
+sorted_similarity_df = calculate_patient_profile_similarity(clinical_trials, patient_profiles, 1)
+sorted_similarity_df
+```
+
+
+```{python}
+# For patient 3
+print(patient_profiles.loc[2,"profile"])
+sorted_similarity_df = calculate_patient_profile_similarity(clinical_trials, patient_profiles, 2)
+sorted_similarity_df
+```
+
+
+
+# match patient embedding to clinical trial embeddings
+```{python}
+# Parameters
+INCLUSION_THRESHOLD = 0.3
+EXCLUSION_THRESHOLD = 0.4
+TOP_K = 5
+
+# Compute average similarity to inclusion and max similarity to exclusion
+def compute_similarity(row):
+    inclusion_embs = row["inclusion_embedding"]
+    exclusion_embs = row["exclusion_embedding"]
+    print("inclusion_embeddings",inclusion_embs)
+
+    # Convert to 2D arrays
+    incl_sim = cosine_similarity(inclusion_embs, [patient_embedding])
+    excl_sim = cosine_similarity(exclusion_embs, [patient_embedding]) if exclusion_embs else np.array([[0]])
+    print("inclusion_similarity_scores", len(incl_sim))
+    row["inclusion_score"] = float(np.mean(incl_sim))
+    row["exclusion_score"] = float(np.max(excl_sim)) if len(exclusion_embs) > 0 else 0
+    return row
+
+# Apply similarity computation
+similarity_df = clinical_trials.copy()
+similarity_df = similarity_df.apply(compute_similarity, axis=1)
+print(similarity_df[["inclusion_score","exclusion_score"]])
+
+```
+
+
+## Filter and rank
+
+```{python}
+# Filter and rank
+filtered = similarity_df[similarity_df["exclusion_score"] < EXCLUSION_THRESHOLD]
+filtered = filtered[filtered["inclusion_score"] >= INCLUSION_THRESHOLD]
+ranked = filtered.sort_values(by="inclusion_score", ascending=False)
+
+# Display results
+if ranked.empty:
+    print("No available trial at this time.")
+else:
+    print(f"\nTop {TOP_K} Matched Trials:\n")
+    for _, row in ranked.head(TOP_K).iterrows():
+        print(f"Trial ID: {row['trial_id']}")
+        print(f"Disease: {row['disease']}")
+        print(f"Inclusion Similarity: {row['inclusion_score']:.2f}")
+        print(f"Exclusion Similarity: {row['exclusion_score']:.2f}")
+        print("-" * 40)
+```
+
+
 # Start using spacy.
 Note: I had to use python version 3.12.10 to get spacy to install correctly. it was not working with version 3.13. I have now switched to version 3.9.22
 - In python version 3.9.22, I was getting error with pip install scispacy. So first, I did the following:

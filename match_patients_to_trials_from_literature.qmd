@@ -1,0 +1,139 @@
+---
+title: Trying ways of matching patients to clinical trials from literature
+author: Shefali Lathwal
+date: 2025-06-26
+date-modified: last-modified
+jupyter: clinical_trial
+format: html
+toc: true
+echo: true
+---
+This notebook is used to explore how to use BioBERT to perform semantic search and match inclusion and exclusion criteria of clinical trials with the clinical history of a patient.
+
+https://www.sciencedirect.com/science/article/pii/S1532046424001527
+https://pmc.ncbi.nlm.nih.gov/articles/PMC12169815/ - Review article on using LLMS for matching patients to clinical trials
+
+-https://github.com/ProjectDossier/patient-trial-matching from this paper - https://www.sciencedirect.com/science/article/pii/S153204642300165X#fn9
+
+I will start with matching criteria listed explicitly in natural langugage.
+
+```{python}
+patient_profile = ["Age is 43 years", "gender is female", "endometriosis confirmed via MRI", "No prior surgery", "BMI is 23"]
+
+inclusion1 = ["gender is female", "Age is between 20 and 35 years", "Diagnosis of endometriosis confirmed by MRI"]
+exclusion1 = ["BMI greater than 35", "previous endometriosis surgery"]
+
+inclusion2 = ["gender is woman", "age between 30 and 45", "symptomatic uterine fibroids confirmed by ultrasound"]
+exclusion2 = ["currently pregnant", "previous uterine surgery"]
+```
+
+Semantic search often includes the following steps:
+1. Natural language understanding
+2. Query expansion to include related terms
+3. COntenxtual understanding
+4. Conceptual matching instead of keyword matching
+
+# Reference:
+https://techblog.ezra.com/semantic-similarity-measurement-in-clinical-text-c34011e67408
+
+https://spotintelligence.com/2023/10/17/semantic-search/#How_to_implement_semantic_search_with_Elasticsearch
+
+```{python}
+import numpy as np
+
+from numpy import dot
+from numpy.linalg import norm
+from transformers import BertTokenizer, BertModel
+import torch
+
+
+def get_bert_similarity(sentence_pairs):
+    """
+    computes the embeddings of each sentence and its similarity with its corresponding pair
+    Args:
+        sentence_pairs(dict): dictionary of lists with the similarity type as key and a list of two sentences as value
+    
+    Returns:
+        similarities(dict): dictionary with similarity type as key and the similarity measure as value
+    """
+    similarities = dict()
+    for sim_type, sent_pair in sentence_pairs.items():
+        inputs_1 = tokenizer(sent_pair[0], return_tensors='pt')
+        inputs_2 = tokenizer(sent_pair[1], return_tensors='pt')
+        sent_1_embed = np.mean(model(**inputs_1).last_hidden_state[0].detach().numpy(), axis=0) # computes the average of all the tokens' last_hidden_state
+        sent_2_embed = np.mean(model(**inputs_2).last_hidden_state[0].detach().numpy(), axis=0)
+        similarities[sim_type] = dot(sent_1_embed, sent_2_embed)/(norm(sent_1_embed)* norm(sent_2_embed))
+    return similarities
+
+sentence_pairs
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+model = BertModel.from_pretrained('bert-base-uncased')
+sentence_pairs = {'similar': [patient_profile[0], 
+                                inclusion1[1]]}
+print(get_bert_similarity(sentence_pairs))
+
+```
+
+```{python}
+document_embeddings = []
+documents = exclusion2
+for document in documents:
+    #print(document)
+    inputs = tokenizer(document, return_tensors="pt", padding=True, truncation=True)
+    outputs = model(**inputs)
+    document_embedding = outputs.last_hidden_state.mean(dim=1)  # Average over tokens
+    document_embeddings.append(document_embedding)
+document_embeddings = torch.cat(document_embeddings)
+#print(document_embeddings.shape)
+# Tokenize and encode user query
+for query in patient_profile:
+    user_query = query
+    print(user_query)
+    user_query_inputs =  tokenizer(user_query, return_tensors="pt", padding=True, truncation=True)
+    user_query_outputs = model(**user_query_inputs)
+    user_query_embedding = user_query_outputs.last_hidden_state.mean(dim=1)
+    #print(user_query_embedding.shape)
+    # Semantic search
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    # Calculate cosine similarity between the user query and all documents
+    with torch.no_grad():
+        similarities = cosine_similarity(user_query_embedding, document_embeddings)
+
+    # Find the index of the most similar document
+    most_similar_document_index = similarities.argmax()
+
+    most_similar_document = documents[most_similar_document_index]
+    print("Most similar document:", most_similar_document, "\n")
+```
+
+```{python}
+import numpy as np
+from numpy import dot
+from numpy.linalg import norm
+from transformers import AutoTokenizer, AutoModel
+
+def get_bert_based_similarity(sentence_pairs, model, tokenizer):
+    """
+    computes the embeddings of each sentence and its similarity with its corresponding pair
+    Args:
+        sentence_pairs(dict): dictionary of lists with the similarity type as key and a list of two sentences as value
+        model: the language model
+        tokenizer: the tokenizer to consider for the computation
+    
+    Returns:
+        similarities(dict): dictionary with similarity type as key and the similarity measure as value
+    """
+    similarities = dict()
+    for sim_type, sent_pair in sentence_pairs.items():
+        inputs_1 = tokenizer(sent_pair[0], return_tensors='pt')
+        inputs_2 = tokenizer(sent_pair[1], return_tensors='pt')
+        sent_1_embed = np.mean(model(**inputs_1).last_hidden_state[0].detach().numpy(), axis=0)
+        sent_2_embed = np.mean(model(**inputs_2).last_hidden_state[0].detach().numpy(), axis=0)
+        similarities[sim_type] = dot(sent_1_embed, sent_2_embed)/(norm(sent_1_embed)* norm(sent_2_embed))
+    return similarities
+```
+
+```{python}
+
+```

@@ -102,4 +102,4 @@ df = pd.DataFrame(output_fields)
 # The path will not be relative to the folder where file is present, but relative to the main folder.
 df.to_csv("./data/clinical_trials_gyn.csv", index=False)
 
-print("✅ Saved trials to data/clinical_trials_gyn.csv")
+print("Saved trials to data/clinical_trials_gyn.csv")

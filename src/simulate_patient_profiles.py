@@ -36,4 +36,4 @@ df = pd.DataFrame(data)
 # Save to CSV
 df.to_csv("data/sample_patients_hpo.csv", index=False)
 
-print("✅ Saved patient phenotype data to data/sample_patients_hpo.csv")
+print("Saved patient phenotype data to data/sample_patients_hpo.csv")

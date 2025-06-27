@@ -135,7 +135,7 @@ clinical_trials
 
 
 # Create functions to clean the text
-1. Pre-process the clinical trials text to seaprate inclusion and exclusion criteria
+1. Pre-process the clinical trials text to separate inclusion and exclusion criteria
 2. Augment the clinical trials dataframe with the cleaned inclusion and exclusion criteria as two separate columns.
 3. Create two embeddings - one for inclusion criteria and one for exclusion criteria
 4. Load patient profiles and get their embeddings
@@ -254,7 +254,7 @@ class PatientOutput(TypedDict):
     profile: list[str]
 
 def extract_patient_facts(profile: str, model = "mistral:latest") -> list[str]:
-    system_message = "You are a medical expert. Given a patient profle: {profile}, break down the profile into discrete sentences with each sentence containing only one fact about the patient, either a demographic fact or clinical fact. Preserve negations where they occur. Extrack chunks with context. For example if the profile is '33-year-old woman with confirmed endometriosis via MRI. No prior surgery. BMI is 23.', break it down into the following strings - 'Age if 33 years', 'Gender is woman', 'confirmed diagnosis of endometriosis via MRI', 'no history of surgery', 'BMI is 23'. Then combine all the strings into a list."
+    system_message = "You are a medical expert. Given a patient profle: {profile}, break down the profile into discrete sentences with each sentence containing only one fact about the patient, either a demographic fact or clinical fact. Preserve negations where they occur. Extract chunks with context. For example if the profile is '33-year-old woman with confirmed endometriosis via MRI. No prior surgery. BMI is 23.', break it down into the following strings - 'Age is 33 years', 'Gender is woman', 'confirmed diagnosis of endometriosis via MRI', 'no history of surgery', 'BMI is 23'. Then combine all the strings into a list."
     llm = ChatOllama(model = model, temperature = 0)
     prompt = system_message.format(profile = profile)
     result = llm.with_structured_output(PatientOutput).invoke(prompt)

@@ -3,22 +3,12 @@ Note: This repository is a work in progress and not fully functional yet. The pr
 
 # Clinical Trial Matcher for Gynaecological Disease
 
-This project is aimed at matching patients with the most relevant ongoing clinical trials. The goal is to extract eligibility criteria and disease information from clinical trial text, and patient clinical history, and produce a ranked list of clinical trials that the patient is eligible for
-
-## Features
-- Text extraction from clinical trial descriptions and patient profiles
-- Similarity scoring between trials and patient profiles
-- Optional UI using Streamlit
-
-## Tech Stack
-- Python
-- ClinicalTrials.gov API
-- ...
+This project is aimed at matching patients with the most relevant ongoing clinical trials. The goal is to extract eligibility criteria and disease information from clinical trial text, and patient clinical history, and produce a ranked list of clinical trials that the patient is eligible for.
 
 ## Folder Structure
 - `data/` – sample input data (clinical trials + patient clinical profiles)
-- `src/` – all scripts as .py files
-- `notebooks/` – step-by-step development of different parts in Quarto documents
+- `src/` – scripts as .py files
+- `notebooks/` – notebooks for experimenting with code logic and libraries, and getting an initial MVP. Saved as quarto documents.
 - `app/` – demo app with Streamlit
 
 ## Installation

@@ -102,4 +102,4 @@ For the patient matching to trials, only the trials for which eligibility scores
 # Look at clinical trials
 The downloaded data consists of 204855 .xml files. We will reatin only 3626 trials for which eligibility information is available.
 
-TODO: Write code to retain only 3626 trials included in the file `qrels-clinical_trials.txt`
+TODO: Write code to retain only 3626 trials included in the file `qrels-clinical_trials.txt` and save the trial corpus as a .jsonl file

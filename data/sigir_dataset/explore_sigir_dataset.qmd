@@ -1,0 +1,105 @@
+---
+title: Explore the sigir dataset
+jupyter: clinical_trial
+format: html
+echo: true
+toc: true
+date: 2025-06-27
+date-modified: last-modified
+---
+
+The original SIGIR dataset was downloaded from the following link: https://data.csiro.au/collection/22333
+
+A description of the dataset is provided here: https://bevankoopman.github.io/papers/sigir2016_clinicaltrials_collection.pdf
+
+According to the publication, the dataset contains the following:
+- 204855 clinical trial documents
+- 60 topics made up of three types:
+    - case descriptions
+    - case summaries
+    - ad-hoc queries provided by experts
+- 4000 documents were judged and provided a score between 0 and 2. 
+    - 0: Would not refer this patient for this clinical trial
+    - 1: Would consider referring this patient to this clinical trial upon further investigation
+    - 2: Highly likely to refer this patient for this clinical trial.
+
+Let's see if the downloaded dataset matches the description provided in the paper.
+
+# Check case descriptions
+```{python}
+with open("./downloaded_data/data/topics-2014_2015-description.topics") as file:
+    text = file.readlines()
+
+descriptions = []
+for line in text:
+    tmp = {}
+    if 'NUM' in line:
+        tmp["id"] = line
+        tmp["text"] = text[text.index(line)+1]
+        descriptions.append(tmp)
+    
+len(descriptions)
+```
+We have verified that there are a total of 60 patient descriptions
+
+# Check case summaries
+```{python}
+with open("./downloaded_data/data/topics-2014_2015-summary.topics") as file:
+    text = file.readlines()
+
+summaries = []
+for line in text:
+    tmp = {}
+    if 'NUM' in line:
+        tmp["id"] = line
+        tmp["text"] = text[text.index(line)+1]
+        summaries.append(tmp)
+    
+len(summaries), summaries
+```
+
+There are a total of 60 summaries
+
+# Eligibility scores
+```{python}
+import pandas as pd
+df = pd.read_table("./downloaded_data/data/qrels-clinical_trials.txt", header = None)
+len((sorted(df[0].unique())))
+```
+
+The eligibility scores are only given for 59 patients. It's unclear why.
+
+```{python}
+len(df[2].unique())
+```
+
+A total of 3626 unique trials are used in the eligibility table.
+
+```{python}
+df[3].value_counts()
+```
+
+There are 2764 zeros, 685 ones and 421 twos in the eligibility criteria table.
+
+```{python}
+df.groupby(0)[3].value_counts()
+```
+
+# Look at adhoc queries
+I can also extract the description of patients from this file
+```{python}
+import json
+
+with open("./downloaded_data/data/adhoc-queries.json") as file:
+    data = json.load(file)
+
+print(len(data))
+data[59]
+```
+
+For the patient matching to trials, only the trials for which eligibility scores are available were used.
+
+# Look at clinical trials
+The downloaded data consists of 204855 .xml files. We will reatin only 3626 trials for which eligibility information is available.
+
+TODO: Write code to retain only 3626 trials included in the file `qrels-clinical_trials.txt`

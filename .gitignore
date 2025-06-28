@@ -3,3 +3,4 @@ __pycache__/
 .env
 .git
 .DS_Store
+data/sigir_dataset/downloaded_data
